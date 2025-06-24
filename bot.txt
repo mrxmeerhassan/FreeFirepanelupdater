@@ -1,0 +1,127 @@
+
+import { Boom } from '@hapi/boom';
+import qrcode from "qrcode-terminal";
+import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import pino from 'pino';
+
+const logger = pino({ level: 'silent' });
+
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth');
+    const sock = makeWASocket({
+        logger,
+        auth: state,
+        printQRInTerminal: true
+    });
+
+    let antiLinkEnabled = true;
+
+    sock.ev.on("messages.upsert", async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message) return;
+
+        const messageText = m.message?.conversation || m.message?.extendedTextMessage?.text || "";
+        const isGroup = m.key.remoteJid.endsWith("@g.us");
+
+        
+    
+// .tagall
+if (messageText === ".tagall" && isGroup) {
+    const groupMetadata = await sock.groupMetadata(m.key.remoteJid);
+    const participants = groupMetadata.participants;
+    
+    let text = '';
+    let mentions = [];
+
+    for (const participant of participants) {
+        text += `@${participant.id.split('@')[0]} `;
+        mentions.push(participant.id);
+    }
+
+    await sock.sendMessage(m.key.remoteJid, { text, mentions }, { quoted: m });
+}
+
+        // .kick @user
+        if (messageText.startsWith(".kick") && isGroup) {
+            const mentionedJid = m.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+
+            if (!mentionedJid) {
+                await sock.sendMessage(m.key.remoteJid, {
+                    text: "Please tag a user to kick (e.g. .kick @user)."
+                });
+                return;
+            }
+
+            if (mentionedJid === sock.user.id) {
+                await sock.sendMessage(m.key.remoteJid, {
+                    text: "I cannot kick myself!"
+                });
+                return;
+            }
+
+            try {
+                await sock.groupParticipantsUpdate(
+                    m.key.remoteJid,
+                    [mentionedJid],
+                    "remove"
+                );
+            } catch (err) {
+                await sock.sendMessage(m.key.remoteJid, {
+                    text: "Failed to kick the user. I might not be an admin."
+                });
+            }
+        }
+
+        // .antilink toggle
+        if (messageText === ".antilink on" && isGroup) {
+            antiLinkEnabled = true;
+            await sock.sendMessage(m.key.remoteJid, { text: "Anti-link is now enabled." });
+            return;
+        }
+
+        if (messageText === ".antilink off" && isGroup) {
+            antiLinkEnabled = false;
+            await sock.sendMessage(m.key.remoteJid, { text: "Anti-link is now disabled." });
+            return;
+        }
+
+        // Detect and remove users sending group invite links
+        if (antiLinkEnabled && isGroup && messageText.includes("https://chat.whatsapp.com/")) {
+            const sender = m.key.participant || m.key.remoteJid;
+
+            const groupMetadata = await sock.groupMetadata(m.key.remoteJid);
+            const botNumber = sock.user.id;
+            const isSenderAdmin = groupMetadata.participants.find(p => p.id === sender && p.admin);
+
+            if (!isSenderAdmin && sender !== botNumber) {
+                try {
+                    await sock.groupParticipantsUpdate(
+                        m.key.remoteJid,
+                        [sender],
+                        "remove"
+                    );
+                    await sock.sendMessage(m.key.remoteJid, { text: "User removed for sending group invite link." });
+                } catch (err) {
+                    await sock.sendMessage(m.key.remoteJid, {
+                        text: "Error: I may not have admin rights to remove user."
+                    });
+                }
+            }
+        }
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("connection.update", (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === "close") {
+            const shouldReconnect = (lastDisconnect?.error = Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                startBot();
+            }
+        } else if (connection === "open") {
+            console.log("Bot is ready!");
+        }
+    });
+}
+
+startBot();
