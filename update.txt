@@ -1,6 +1,4 @@
 version = 1.8
 url = https://github.com/mrxmeerhassan/FreeFirepanelupdater/releases/latest/download/ClientPanel.exe
 size = 0.87 MB 
-size = 0.00 MB 
-size = 0.00  MB 
-size = 0.15 MB 
+
